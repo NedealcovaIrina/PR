@@ -1,88 +1,143 @@
-import requests
+import socket
+import ssl
 from bs4 import BeautifulSoup
+from functools import reduce
+from datetime import datetime
 
-# URL of the website
-url = 'https://nlcollection.md/'
+# URL parameters
+host = 'nlcollection.md'
+port = 443  # HTTPS uses port 443
 
-# Headers to mimic a browser request
-headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.75 Safari/537.36'
-}
+# Exchange rate (MDL to EUR)
+exchange_rate = 0.05  # Example rate; update as necessary
 
+# Create TCP connection to the server and wrap it in SSL for HTTPS
+def create_tcp_connection(host, port):
+    context = ssl.create_default_context()
+    sock = socket.create_connection((host, port))
+    ssock = context.wrap_socket(sock, server_hostname=host)
+    return ssock
+
+# Function to send HTTP request
+def send_http_request(connection):
+    request = f"GET / HTTP/1.1\r\nHost: {host}\r\nUser-Agent: CustomClient/1.0\r\nConnection: close\r\n\r\n"
+    connection.send(request.encode())
+
+# Function to receive the response from the server
+def receive_response(connection):
+    response = b""
+    while True:
+        data = connection.recv(4096)  # Receive 4KB chunks of data
+        if not data:
+            break
+        response += data
+    return response.decode()
 
 # Function to validate product price
 def validate_price(price_text):
     try:
-        # Remove any non-digit characters and check if it is a valid number
         cleaned_price = ''.join(filter(str.isdigit, price_text))
         return int(cleaned_price) > 0  # Ensure price is greater than zero
     except ValueError:
         return False
 
-
 # Function to validate product article
 def validate_article(article_text):
-    # Ensure the article is not empty and contains at least one alphanumeric character
     return bool(article_text and article_text.strip() and any(char.isalnum() for char in article_text))
 
+# Function to convert MDL to EUR
+def convert_to_euro(price_mdl):
+    return round(price_mdl * exchange_rate, 2)
 
-# Send GET request with headers
-response = requests.get(url, headers=headers)
+# Create TCP connection and send the request
+connection = create_tcp_connection(host, port)
+send_http_request(connection)
 
-# Check if the request was successful
-if response.status_code == 200:
+# Receive the response
+response = receive_response(connection)
+connection.close()
+
+# Find the start of the HTML content (skip headers)
+html_start = response.find('<!DOCTYPE')
+html_content = response[html_start:]
+
+# Check if HTML was extracted correctly
+if html_content:
     print("Request successful!")
-    html_content = response.text
+    print(f"Here is the link to the main page: https://{host}/")
 
-    # Step 1: Parse the HTML content with BeautifulSoup
+    # Parse the HTML content with BeautifulSoup
     soup = BeautifulSoup(html_content, 'html.parser')
 
-    # Step 2: Find all product elements
+    # Find all product elements
     products = soup.find_all('div', class_='product')
 
-    # Step 3: Extract product details and validate them
-    for product in products:
-        # Extract the product article (identifier/name)
+    # Debug: Check how many products are found
+    print(f"Number of products found: {len(products)}")
+
+    # Function to extract product details
+    def extract_product(product):
         article = product.find('div', class_='product__article')
         article_text = article.get_text(strip=True) if article else None
 
-        # Extract the product price
         price = product.find('div', class_='product__price__current')
         price_text = price.get_text(strip=True) if price else None
 
-        # Extract the product link
         link = product.find('a', class_='product__link')
         product_link = f"https://nlcollection.md{link['href']}" if link else "No link found"
 
-        # Extract the image URL
         image = product.find('img', class_='product__image')
         image_url = f"https://nlcollection.md{image['src']}" if image else "No image found"
 
-        # Extract flags (e.g., "New")
         flags = product.find('div', class_='product__flags')
         flag_text = flags.get_text(strip=True) if flags else "No flags found"
 
-        # Extract brand
         brand = product.find('div', class_='product__brand')
         brand_text = brand.get_text(strip=True) if brand else "No brand available"
 
-        # ---- Validation Checks ----
-        if not validate_article(article_text):
-            print(f"Invalid product article: {article_text}. Skipping this product.")
-            continue  # Skip this product if the article is invalid
+        # Ensure price is valid and convert to integer
+        price_mdl = int(''.join(filter(str.isdigit, price_text))) if price_text and validate_price(price_text) else None
 
-        if not price_text or not validate_price(price_text):
-            print(f"Invalid product price: {price_text}. Skipping this product.")
-            continue  # Skip this product if the price is invalid
+        return {
+            "article": article_text,
+            "price_mdl": price_mdl,
+            "price_text": f"{price_mdl}MDL" if price_mdl else "No price available",
+            "price_eur": convert_to_euro(price_mdl) if price_mdl else None,
+            "link": product_link,
+            "image_url": image_url,
+            "flags": flag_text,
+            "brand": brand_text,
+        }
 
-        # If both validations pass, we can store or print the data
-        print(f"Product Article: {article_text}")
-        print(f"Price: {price_text}")
-        print(f"Link: {product_link}")
-        print(f"Image URL: {image_url}")
-        print(f"Flags: {flag_text}")
-        print(f"Brand: {brand_text}")
-        print("=" * 40)
+    # Extract all product details
+    products_data = list(map(extract_product, products))
+
+    # Filter products with valid prices and within the range 10 - 3000 MDL
+    filtered_products = list(
+        filter(lambda p: p['price_mdl'] is not None and 10 <= p['price_mdl'] <= 3000, products_data))
+
+    # Debug: Check how many products are filtered
+    print(f"Number of filtered products: {len(filtered_products)}")
+
+    # Sort products by price in EUR
+    filtered_products.sort(key=lambda x: x['price_eur'])
+
+    # Calculate total price in EUR using reduce
+    total_price_eur = reduce(lambda acc, p: acc + p['price_eur'], filtered_products, 0)
+
+    # Output the filtered and processed data
+    for product in filtered_products:
+        print(f"Product Article: {product['article']}")
+        print(f"Price: {product['price_text']}")  # Original price in MDL
+        print(f"Price (EUR): {product['price_eur']}")
+        print(f"Link: {product['link']}")
+        print(f"Image URL: {product['image_url']}")
+        print(f"Flags: {product['flags']}")
+        print(f"Brand: {product['brand']}")
+        print("=" * 50)
+
+    print(f"Total Price (EUR) of Filtered Products: {total_price_eur:.2f}")
+    print(f"Timestamp: {datetime.utcnow().isoformat()}")
 
 else:
-    print(f"Failed to retrieve content. Status code: {response.status_code}")
+    print("Failed to retrieve valid HTML content.")
