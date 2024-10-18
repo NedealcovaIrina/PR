@@ -2,6 +2,8 @@ import requests
 from bs4 import BeautifulSoup
 from functools import reduce
 from datetime import datetime
+import json
+import re
 
 # URL of the website
 url = 'https://nlcollection.md/'
@@ -24,11 +26,6 @@ def validate_price(price_text):
         return False
 
 
-# Function to validate product article
-def validate_article(article_text):
-    return bool(article_text and article_text.strip() and any(char.isalnum() for char in article_text))
-
-
 # Function to convert MDL to EUR
 def convert_to_euro(price_mdl):
     return round(price_mdl * exchange_rate, 2)
@@ -36,27 +33,10 @@ def convert_to_euro(price_mdl):
 
 # Function to serialize products to JSON format
 def serialize_to_json(data):
-    json_str = "{\n"
-    json_str += f'  "timestamp": "{data["timestamp"]}",\n'
-    json_str += f'  "total_price_eur": {data["total_price_eur"]},\n'
-    json_str += '  "products": [\n'
-    for product in data["products"]:
-        json_str += "    {\n"
-        json_str += f'      "article": "{product["article"]}",\n'
-        json_str += f'      "price_mdl": {product["price_mdl"]},\n'
-        json_str += f'      "price_eur": {product["price_eur"]},\n'
-        json_str += f'      "link": "{product["link"]}",\n'
-        json_str += f'      "image_url": "{product["image_url"]}",\n'
-        json_str += f'      "flags": "{product["flags"]}",\n'
-        json_str += f'      "brand": "{product["brand"]}"\n'
-        json_str += "    },\n"
-    json_str = json_str.rstrip(",\n")  # Remove the last comma
-    json_str += "\n  ]\n"
-    json_str += "}"
-    return json_str
+    return json.dumps(data, indent=2)
 
 
-# Function to serialize products to XML format
+# Function to serialize products to XML format manually
 def serialize_to_xml(data):
     xml_str = "<data>\n"
     xml_str += f'  <timestamp>{data["timestamp"]}</timestamp>\n'
@@ -77,13 +57,105 @@ def serialize_to_xml(data):
     return xml_str
 
 
+# Custom serialization function
+def custom_serialize(obj):
+    """
+    Serializes an object (list, dictionary, string, integer, etc.) into a custom string format.
+    """
+    if isinstance(obj, dict):
+        serialized_items = []
+        for key, value in obj.items():
+            key_serialized = f'Key-{{{custom_serialize(key)}}}'
+            value_serialized = f'Val-{{{custom_serialize(value)}}}'
+            serialized_items.append(f'{key_serialized}:: {value_serialized}')
+        return '{' + ', '.join(serialized_items) + '}'
+
+    elif isinstance(obj, list):
+        serialized_items = [f'[{i}]:{custom_serialize(item)}' for i, item in enumerate(obj)]
+        return '[' + ', '.join(serialized_items) + ']'
+
+    elif isinstance(obj, str):
+        return f'STR:"{obj}"'
+
+    elif isinstance(obj, int):
+        return f'INT:{obj}'
+
+    elif isinstance(obj, float):
+        return f'FLOAT:{obj}'
+
+    else:
+        raise TypeError(f"Unsupported type: {type(obj)}")
+
+
+# Function to manually deserialize the custom serialized format
+def custom_deserialize(serialized_str):
+    """
+    Deserializes a custom serialized string into the original object (list, dictionary, etc.).
+    """
+    if serialized_str.startswith('INT:'):
+        return int(serialized_str[4:])
+    elif serialized_str.startswith('FLOAT:'):
+        return float(serialized_str[6:])
+    elif serialized_str.startswith('STR:'):
+        return serialized_str[5:-1]  # Remove STR:" prefix and ending quote
+    elif serialized_str.startswith('['):
+        # Deserializing list
+        list_pattern = re.compile(r'\[\d+\]:(\{.*?\}|\[.*?\]|STR:".*?"|INT:\d+|FLOAT:\d+\.\d+)', re.DOTALL)
+        list_items = list_pattern.findall(serialized_str)
+        return [custom_deserialize(item) for item in list_items]
+    elif serialized_str.startswith('{'):
+        # Deserializing dict
+        dict_pattern = re.compile(r'Key-\{(.*?)\}:: Val-\{(.*?)\}', re.DOTALL)
+        dict_items = dict_pattern.findall(serialized_str)
+        return {custom_deserialize(key): custom_deserialize(value) for key, value in dict_items}
+    else:
+        raise ValueError(f"Unknown format: {serialized_str}")
+
+
+# Function to manually deserialize XML format (no external library)
+def deserialize_from_xml(xml_str):
+    def get_value(tag, xml):
+        pattern = f'<{tag}>(.*?)</{tag}>'
+        match = re.search(pattern, xml)
+        return match.group(1) if match else None
+
+    def parse_product(product_xml):
+        return {
+            "article": get_value('article', product_xml),
+            "price_mdl": int(get_value('price_mdl', product_xml)),
+            "price_eur": float(get_value('price_eur', product_xml)),
+            "link": get_value('link', product_xml),
+            "image_url": get_value('image_url', product_xml),
+            "flags": get_value('flags', product_xml),
+            "brand": get_value('brand', product_xml)
+        }
+
+    # Parse main fields
+    timestamp = get_value('timestamp', xml_str)
+    total_price_eur = float(get_value('total_price_eur', xml_str))
+
+    # Extract product blocks
+    products_block = re.findall(r'<product>(.*?)</product>', xml_str, re.DOTALL)
+    products = [parse_product(product_xml) for product_xml in products_block]
+
+    return {
+        "timestamp": timestamp,
+        "total_price_eur": total_price_eur,
+        "products": products
+    }
+
+
+# Function to deserialize JSON format
+def deserialize_from_json(json_str):
+    return json.loads(json_str)
+
+
 # Send GET request with headers
 response = requests.get(url, headers=headers)
 
 # Check if the request was successful
 if response.status_code == 200:
     print("Request successful!")
-    print("Here is the link to the main page: https://nlcollection.md/")
     html_content = response.text
 
     # Parse the HTML content with BeautifulSoup
@@ -91,7 +163,6 @@ if response.status_code == 200:
 
     # Find all product elements
     products = soup.find_all('div', class_='product')
-
 
     # Function to extract product details
     def extract_product(product):
@@ -124,7 +195,6 @@ if response.status_code == 200:
             "flags": flag_text,
             "brand": brand_text,
         }
-
 
     # Extract all product details
     products_data = list(map(extract_product, products))
@@ -159,39 +229,25 @@ if response.status_code == 200:
     print("\nXML Output:")
     print(xml_output)
 
+    # Serialize to custom format
+    custom_serialized = custom_serialize(result)
+    print("\nCustom Serialized Output:")
+    print(custom_serialized)
 
-    def custom_serialize(obj):
-        """
-        Serializes an object (list, dictionary, string, integer, etc.) into a custom string format.
-        """
-        if isinstance(obj, dict):
-            serialized_items = []
-            for key, value in obj.items():
-                key_serialized = f'Key-{{{custom_serialize(key)}}}'
-                value_serialized = f'Val-{{{custom_serialize(value)}}}'
-                serialized_items.append(f'{key_serialized}:: {value_serialized}')
-            return '{' + ', '.join(serialized_items) + '}'
+    # Example of deserializing from JSON
+    deserialized_json = deserialize_from_json(json_output)
+    print("\nDeserialized JSON:")
+    print(deserialized_json)
 
-        elif isinstance(obj, list):
-            serialized_items = [f'[{i}]:{custom_serialize(item)}' for i, item in enumerate(obj)]
-            return '[' + ', '.join(serialized_items) + ']'
+    # Example of deserializing from XML
+    deserialized_xml = deserialize_from_xml(xml_output)
+    print("\nDeserialized XML:")
+    print(deserialized_xml)
 
-        elif isinstance(obj, str):
-            return f'STR:"{obj}"'
-
-        elif isinstance(obj, int):
-            return f'INT:{obj}'
-
-        elif isinstance(obj, float):
-            return f'FLOAT:{obj}'
-
-        else:
-            raise TypeError(f"Unsupported type: {type(obj)}")
-
-
-    serialized_data = custom_serialize(result)
-    print(serialized_data)
-
+    # Example of deserializing from custom format
+    deserialized_custom = custom_deserialize(custom_serialized)
+    print("\nDeserialized Custom Format:")
+    print(deserialized_custom)
 
 else:
     print(f"Failed to retrieve content. Status code: {response.status_code}")
