@@ -1,103 +1,141 @@
-import requests
-from bs4 import BeautifulSoup
+from flask import Flask, request, jsonify
 import mysql.connector
 
 # Database configuration
 db_config = {
-    'host': 'localhost',            # Replace with your MySQL host
-    'user':'Irina',        # Replace with your MySQL username
-    'password': 'Ari.301203',    # Replace with your MySQL password
-    'database': 'MySQL'     # Replace with your MySQL database name
+    'host': 'localhost',
+    'user': 'Irina',
+    'password': 'Ari.301203',
+    'database': 'MySQL'
 }
 
-# Connect to the MySQL database
-connection = mysql.connector.connect(**db_config)
-cursor = connection.cursor()
+# Initialize the Flask application
+app = Flask(__name__)
 
-# SQL statement to create the 'products' table
-create_table_query = """
-CREATE TABLE IF NOT EXISTS products (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    article VARCHAR(255) NOT NULL,
-    price VARCHAR(50),
-    link TEXT NOT NULL,
-    image_url TEXT,
-    flags VARCHAR(100),
-    brand VARCHAR(100),
-    scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-"""
 
-# Execute the query to create the table
-cursor.execute(create_table_query)
-connection.commit()
-print("Table created successfully.")
+# Database connection function
+def get_db_connection():
+    connection = mysql.connector.connect(**db_config)
+    return connection
 
-# Function to insert a product into the database
-def insert_product(article, price, link, image_url, flags, brand):
+
+# CREATE: Add a new product
+@app.route('/product', methods=['POST'])
+def create_product():
+    data = request.json
+    connection = get_db_connection()
     cursor = connection.cursor()
+
     insert_query = """
     INSERT INTO products (article, price, link, image_url, flags, brand)
     VALUES (%s, %s, %s, %s, %s, %s)
     """
-    values = (article, price, link, image_url, flags, brand)
+    values = (data['article'], data['price'], data['link'], data['image_url'], data['flags'], data['brand'])
+
     cursor.execute(insert_query, values)
     connection.commit()
-    print(f"Product '{article}' inserted successfully.")
+
+    product_id = cursor.lastrowid
     cursor.close()
+    connection.close()
 
-# Scraping logic
-url = 'https://nlcollection.md/'
-headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.75 Safari/537.36'
-}
+    return jsonify({'message': 'Product created', 'product_id': product_id}), 201
 
-# Send GET request with headers
-response = requests.get(url, headers=headers)
 
-# Check if the request was successful
-if response.status_code == 200:
-    print("Request successful!")
-    html_content = response.text
+# READ: Get product by ID or name
+@app.route('/product', methods=['GET'])
+def get_product():
+    product_id = request.args.get('id')
+    article = request.args.get('article')
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
 
-    # Step 1: Parse the HTML content with BeautifulSoup
-    soup = BeautifulSoup(html_content, 'html.parser')
+    if product_id:
+        cursor.execute("SELECT * FROM products WHERE id = %s", (product_id,))
+    elif article:
+        cursor.execute("SELECT * FROM products WHERE article = %s", (article,))
+    else:
+        return jsonify({'error': 'No identifier provided'}), 400
 
-    # Step 2: Find all product elements
-    products = soup.find_all('div', class_='product')
+    product = cursor.fetchone()
+    cursor.close()
+    connection.close()
 
-    # Step 3: Extract and insert product details
-    for product in products:
-        # Extract the product article
-        article = product.find('div', class_='product__article')
-        article_text = article.get_text(strip=True) if article else "No article found"
+    if product:
+        return jsonify(product), 200
+    else:
+        return jsonify({'error': 'Product not found'}), 404
 
-        # Extract the product price
-        price = product.find('div', class_='product__price__current')
-        price_text = price.get_text(strip=True) if price else "No price found"
 
-        # Extract the product link
-        link = product.find('a', class_='product__link')
-        product_link = f"https://nlcollection.md{link['href']}" if link else "No link found"
+@app.route('/products', methods=['GET'])
+def get_products():
+    offset = request.args.get('offset', default=0, type=int)
+    limit = request.args.get('limit', default=5, type=int)
 
-        # Extract the image URL
-        image = product.find('img', class_='product__image')
-        image_url = f"https://nlcollection.md{image['src']}" if image else "No image found"
+    # Enforce a reasonable maximum limit
+    MAX_LIMIT = 50
+    if limit > MAX_LIMIT:
+        limit = MAX_LIMIT
 
-        # Extract flags (e.g., "New")
-        flags = product.find('div', class_='product__flags')
-        flag_text = flags.get_text(strip=True) if flags else "No flags found"
+    connection = get_db_connection()
+    cursor = connection.cursor(dictionary=True)
 
-        # Extract brand
-        brand = product.find('div', class_='product__brand')
-        brand_text = brand.get_text(strip=True) if brand else "No brand available"
+    query = "SELECT * FROM products LIMIT %s OFFSET %s"
+    cursor.execute(query, (limit, offset))
 
-        # Insert into the database
-        insert_product(article_text, price_text, product_link, image_url, flag_text, brand_text)
+    products = cursor.fetchall()
+    cursor.close()
+    connection.close()
 
-else:
-    print(f"Failed to retrieve content. Status code: {response.status_code}")
+    return jsonify(products), 200
 
-# Close the database connection
-connection.close()
-print("Database connection closed.")
+
+# UPDATE: Update a product by ID
+@app.route('/product', methods=['PUT'])
+def update_product():
+    product_id = request.args.get('id')
+    if not product_id:
+        return jsonify({'error': 'Product ID required'}), 400
+
+    data = request.json
+    connection = get_db_connection()
+    cursor = connection.cursor()
+
+    update_query = """
+    UPDATE products SET article = %s, price = %s, link = %s, image_url = %s, flags = %s, brand = %s
+    WHERE id = %s
+    """
+    values = (data['article'], data['price'], data['link'], data['image_url'], data['flags'], data['brand'], product_id)
+
+    cursor.execute(update_query, values)
+    connection.commit()
+
+    cursor.close()
+    connection.close()
+
+    return jsonify({'message': 'Product updated'}), 200
+
+
+# DELETE: Delete a product by ID
+@app.route('/product', methods=['DELETE'])
+def delete_product():
+    product_id = request.args.get('id')
+    if not product_id:
+        return jsonify({'error': 'Product ID required'}), 400
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+
+    delete_query = "DELETE FROM products WHERE id = %s"
+    cursor.execute(delete_query, (product_id,))
+    connection.commit()
+
+    cursor.close()
+    connection.close()
+
+    return jsonify({'message': 'Product deleted'}), 200
+
+
+# Run the Flask app
+if __name__ == '__main__':
+    app.run(debug=True)
