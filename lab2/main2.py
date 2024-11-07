@@ -1,23 +1,45 @@
 from flask import Flask, request, jsonify
 import mysql.connector
+import os
 
-# Database configuration
+# Database configuration from environment variables
 db_config = {
-    'host': 'localhost',
-    'user': 'Irina',
-    'password': 'Ari.301203',
-    'database': 'MySQL'
+    'host': os.getenv('DB_HOST', 'localhost'),
+    'user': os.getenv('DB_USER', 'Irina'),
+    'password': os.getenv('DB_PASSWORD', 'Ari.301203'),
+    'database': os.getenv('DB_NAME', 'MySQL')
 }
 
 # Initialize the Flask application
 app = Flask(__name__)
-
 
 # Database connection function
 def get_db_connection():
     connection = mysql.connector.connect(**db_config)
     return connection
 
+def initialize_database():
+    connection = get_db_connection()
+    if connection:
+        cursor = connection.cursor()
+        create_table_query = """
+        CREATE TABLE IF NOT EXISTS products (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            article VARCHAR(255) NOT NULL,
+            price DECIMAL(10, 2) NOT NULL,
+            link VARCHAR(255),
+            image_url VARCHAR(255),
+            flags VARCHAR(50),
+            brand VARCHAR(100)
+        );
+        """
+        cursor.execute(create_table_query)
+        connection.commit()
+        cursor.close()
+        connection.close()
+
+# Run the initialize_database function when the Flask app starts
+initialize_database()
 
 # CREATE: Add a new product
 @app.route('/product', methods=['POST'])
@@ -40,7 +62,6 @@ def create_product():
     connection.close()
 
     return jsonify({'message': 'Product created', 'product_id': product_id}), 201
-
 
 # READ: Get product by ID or name
 @app.route('/product', methods=['GET'])
@@ -66,7 +87,7 @@ def get_product():
     else:
         return jsonify({'error': 'Product not found'}), 404
 
-
+# READ: Get a list of products with pagination
 @app.route('/products', methods=['GET'])
 def get_products():
     offset = request.args.get('offset', default=0, type=int)
@@ -88,7 +109,6 @@ def get_products():
     connection.close()
 
     return jsonify(products), 200
-
 
 # UPDATE: Update a product by ID
 @app.route('/product', methods=['PUT'])
@@ -115,7 +135,6 @@ def update_product():
 
     return jsonify({'message': 'Product updated'}), 200
 
-
 # DELETE: Delete a product by ID
 @app.route('/product', methods=['DELETE'])
 def delete_product():
@@ -135,7 +154,6 @@ def delete_product():
 
     return jsonify({'message': 'Product deleted'}), 200
 
-
 # Run the Flask app
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
