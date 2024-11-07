@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mysql_db
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: MySQL
+      MYSQL_USER: Irina
+      MYSQL_PASSWORD: Ari.301203
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - my_network
+
+  flask_app:
+    build:
+      context: .  # Use the current directory, where the Dockerfile is located
+    container_name: flask_app
+    environment:
+      FLASK_APP: main2.py
+      FLASK_RUN_HOST: 0.0.0.0
+      DB_HOST: mysql  # Set to the name of the MySQL service
+      DB_USER: Irina
+      DB_PASSWORD: Ari.301203
+      DB_NAME: MySQL
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mysql
+    networks:
+      - my_network
+
+volumes:
+  mysql_data:
+
+networks:
+  my_network:
